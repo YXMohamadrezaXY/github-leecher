@@ -1,6 +1,2 @@
-**نتایج جستجو:**
-- [xneon2/NAUGHTY-HATZU](https://github.com/xneon2/NAUGHTY-HATZU) ⭐ 105
-- [gedankenstuecke/pOrNtology](https://github.com/gedankenstuecke/pOrNtology) ⭐ 40
-- [EchterAlsFake/xnxx_api](https://github.com/EchterAlsFake/xnxx_api) ⭐ 44
-- [jemy80/xdown](https://github.com/jemy80/xdown) ⭐ 16
-- [Dularazero/xnxx-dl-wabot](https://github.com/Dularazero/xnxx-dl-wabot) ⭐ 10
+✅ اسکرین‌شات (کل صفحه) با موفقیت گرفته شد.
+📎 فایل `links.txt` شامل تمام لینک‌های صفحه نیز ایجاد شد.
