@@ -96,9 +96,52 @@ def capture_video_urls(page, url, max_videos=5):
         print(f"  {v}")
     return final
 
+def download_videos_with_ytdlp(url, output_dir, max_videos, quality="best"):
+    """استفاده از yt-dlp مستقیماً روی URL (برای یوتیوب و سایت‌های مشابه)"""
+    print(f"استفاده از yt-dlp برای دانلود ویدئوها از: {url}")
+    outtmpl = os.path.join(output_dir, "%(title)s.%(ext)s")
+    cmd = [
+        "yt-dlp",
+        "-f", quality,
+        "--no-playlist",
+        "--max-downloads", str(max_videos),
+        "--max-filesize", "500M",
+        "-o", outtmpl,
+        url
+    ]
+    try:
+        result = subprocess.run(cmd, capture_output=True, text=True, timeout=300)
+        print(result.stdout)
+        if result.returncode != 0:
+            print(f"yt-dlp خطا:\n{result.stderr}")
+            # fallback to best
+            fallback_cmd = [
+                "yt-dlp",
+                "-f", "best",
+                "--no-playlist",
+                "--max-downloads", str(max_videos),
+                "--max-filesize", "500M",
+                "-o", outtmpl,
+                url
+            ]
+            result2 = subprocess.run(fallback_cmd, capture_output=True, text=True, timeout=300)
+            if result2.returncode == 0:
+                print("fallback to best succeeded")
+            else:
+                print(f"fallback also failed:\n{result2.stderr}")
+                return 0
+        # count downloaded files
+        count = len([f for f in os.listdir(output_dir) if os.path.isfile(os.path.join(output_dir, f))])
+        return count
+    except Exception as e:
+        print(f"yt-dlp exception: {e}")
+        return 0
+
 def main():
     url = os.environ["INPUT_URL"].strip()
     max_videos = int(os.environ.get("INPUT_MAX_VIDEOS", "5"))
+    # اگر متغیر محیطی FORCE_YTDLP تنظیم شده باشد، مستقیماً از yt-dlp استفاده کن
+    force_ytdlp = os.environ.get("FORCE_YTDLP", "").lower() == "true"
 
     if not url.startswith("http"):
         print("آدرس باید با http شروع شود.")
@@ -129,21 +172,21 @@ def main():
                 f.write(f"❌ خطا در بارگذاری: {e}")
             return
 
-        # عکس‌ها
         images = extract_images(page, url)
 
-        # یک صفحه جدید برای ویدئوها
-        page2 = context.new_page()
-        try:
-            video_urls = capture_video_urls(page2, url, max_videos)
-        except Exception as e:
-            print(f"خطا در رهگیری ویدئوها: {e}")
-            video_urls = []
-        finally:
-            page2.close()
+        # اگر force_ytdlp نباشد، ابتدا رهگیری شبکه را امتحان کن
+        video_urls = []
+        if not force_ytdlp:
+            page2 = context.new_page()
+            try:
+                video_urls = capture_video_urls(page2, url, max_videos)
+            except Exception as e:
+                print(f"خطا در رهگیری ویدئوها: {e}")
+            finally:
+                page2.close()
+
         browser.close()
 
-    # دانلود عکس‌ها
     img_downloaded = 0
     for img_url in images:
         fname = sanitize_filename(img_url)
@@ -152,33 +195,38 @@ def main():
         if download_file(img_url, os.path.join(img_dir, fname)):
             img_downloaded += 1
 
-    # دانلود ویدئوها
     vid_downloaded = 0
-    for video_url in video_urls:
-        ext = None
-        for v_ext in ("mp4", "webm", "mkv", "mov", "avi", "flv", "ts", "m3u8"):
-            if video_url.lower().endswith(v_ext):
-                ext = v_ext
-                break
-        if ext == "m3u8":
-            print(f"دانلود HLS با yt-dlp: {video_url}")
-            outtmpl = os.path.join(vid_dir, "%(title)s.%(ext)s")
-            cmd = ["yt-dlp", "-f", "best", "--no-playlist", "--max-filesize", "500M", "-o", outtmpl, video_url]
-            try:
-                result = subprocess.run(cmd, capture_output=True, text=True, timeout=120)
-                if result.returncode == 0:
+    # اگر رهگیری شبکه نتیجه‌ای نداشت یا force_ytdlp فعال بود، از yt-dlp استفاده کن
+    if not video_urls or force_ytdlp:
+        print("رهگیری شبکه نتیجه‌ای نداشت یا FORCE_YTDLP=true است. استفاده از yt-dlp...")
+        vid_downloaded = download_videos_with_ytdlp(url, vid_dir, max_videos)
+    else:
+        # دانلود از لینک‌های رهگیری شده
+        for video_url in video_urls:
+            ext = None
+            for v_ext in ("mp4", "webm", "mkv", "mov", "avi", "flv", "ts", "m3u8"):
+                if video_url.lower().endswith(v_ext):
+                    ext = v_ext
+                    break
+            if ext == "m3u8":
+                print(f"دانلود HLS با yt-dlp: {video_url}")
+                outtmpl = os.path.join(vid_dir, "%(title)s.%(ext)s")
+                cmd = ["yt-dlp", "-f", "best", "--no-playlist", "--max-filesize", "500M", "-o", outtmpl, video_url]
+                try:
+                    result = subprocess.run(cmd, capture_output=True, text=True, timeout=120)
+                    if result.returncode == 0:
+                        vid_downloaded += 1
+                    else:
+                        print(f"yt-dlp شکست خورد: {result.stderr}")
+                except subprocess.TimeoutExpired:
+                    print("yt-dlp زمان‌بر شد.")
+                except Exception as e:
+                    print(f"خطا در yt-dlp: {e}")
+            else:
+                fname = sanitize_filename(video_url, ext=ext if ext else "mp4")
+                headers = {"Referer": url}
+                if download_file(video_url, os.path.join(vid_dir, fname), headers=headers):
                     vid_downloaded += 1
-                else:
-                    print(f"yt-dlp شکست خورد: {result.stderr}")
-            except subprocess.TimeoutExpired:
-                print("yt-dlp زمان‌بر شد.")
-            except Exception as e:
-                print(f"خطا در yt-dlp: {e}")
-        else:
-            fname = sanitize_filename(video_url, ext=ext if ext else "mp4")
-            headers = {"Referer": url}
-            if download_file(video_url, os.path.join(vid_dir, fname), headers=headers):
-                vid_downloaded += 1
 
     report = f"✅ دانلود از {url} کامل شد.\n"
     report += f"🖼️ عکس‌های دانلود شده: {img_downloaded} از {len(images)}\n"
