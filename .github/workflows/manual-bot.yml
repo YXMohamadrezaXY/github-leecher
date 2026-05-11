@@ -1,0 +1,35 @@
+name: Manual Bot (Search or Screenshot)
+
+on:
+  workflow_dispatch:
+    inputs:
+      query:
+        description: 'عبارت جستجو یا لینک صفحه (با http شروع شود)'
+        required: true
+        default: 'python'
+
+jobs:
+  run:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: |
+          pip install requests playwright
+          playwright install --with-deps chromium
+
+      - name: Run handler
+        env:
+          INPUT_QUERY: ${{ github.event.inputs.query }}
+        run: python scripts/manual_handler.py
+
+      - name: Upload result as artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: bot-result
+          path: output/
