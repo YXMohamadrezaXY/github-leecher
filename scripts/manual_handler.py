@@ -1,8 +1,8 @@
 import os
+import time
 import requests
 from urllib.parse import urljoin
 from playwright.sync_api import sync_playwright
-import time
 
 def search_github(query):
     url = f"https://api.github.com/search/repositories?q={query}"
@@ -23,89 +23,164 @@ def search_github(query):
         result += f"- [{item['full_name']}]({item['html_url']}) ⭐ {item['stargazers_count']}\n"
     return result
 
-def wait_for_media_to_load(page, timeout=5000):
-    """منتظر می‌ماند تا عکس‌ها و ویدیوهای در حال بارگذاری کامل شوند."""
-    print("منتظر بارگذاری عکس‌ها و ویدیوها...")
+def find_scrollable_container(page):
+    """
+    تشخیص می‌دهد که اسکرول اصلی صفحه روی کدام عنصر است.
+    اگر اسکرول روی body باشد، None برمی‌گرداند.
+    """
+    # اسکرول‌المنت پیش‌فرض (معمولاً <html> یا body)
+    scrolling_element = page.evaluate("document.scrollingElement.tagName.toLowerCase()")
+    if scrolling_element in ["html", "body"]:
+        return None  # اسکرول روی بدنه است
+
+    # در غیر این صورت یک container داخلی اسکرول دارد (مثل div.app)
+    # یک سلکتور ساده برای پیداکردن container اصلی که overflow-y داشته باشد
+    container = page.evaluate("""() => {
+        const all = document.querySelectorAll('*');
+        for (const el of all) {
+            const style = window.getComputedStyle(el);
+            if ((style.overflowY === 'auto' || style.overflowY === 'scroll') && el.scrollHeight > el.clientHeight) {
+                return el.tagName + (el.id ? '#' + el.id : '') + (el.className ? '.' + el.className.split(' ').join('.') : '');
+            }
+        }
+        return null;
+    }""")
+    return container  # اگر پیدا کرد نام سلکتور رو برمی‌گردونه
+
+def intelligent_scroll(page, container_selector=None):
+    """
+    اسکرول هوشمند: اگر container_selector داده شود، داخل آن اسکرول می‌کند.
+    در غیر این صورت بدنه صفحه را اسکرول می‌کند.
+    """
+    if container_selector:
+        print(f"تشخیص container اسکرول: {container_selector}")
+        # منتظر بودن برای اینکه container در DOM باشد
+        page.wait_for_selector(container_selector, timeout=5000)
+        scroll_element = page.locator(container_selector)
+    else:
+        print("اسکرول روی بدنه یا html")
+        scroll_element = None
+
+    print("شروع اسکرول هوشمند...")
+    if scroll_element:
+        # اسکرول داخل container
+        last_scroll_top = page.evaluate(f"document.querySelector('{container_selector}').scrollTop")
+        unchanged_count = 0
+        while True:
+            page.evaluate(f"document.querySelector('{container_selector}').scrollTo(0, document.querySelector('{container_selector}').scrollHeight)")
+            try:
+                page.wait_for_load_state("networkidle", timeout=10000)
+            except:
+                pass
+            time.sleep(0.5)
+            new_scroll_top = page.evaluate(f"document.querySelector('{container_selector}').scrollTop")
+            if new_scroll_top == last_scroll_top:
+                unchanged_count += 1
+                if unchanged_count >= 3:
+                    break
+            else:
+                unchanged_count = 0
+                last_scroll_top = new_scroll_top
+    else:
+        # اسکرول بدنه
+        last_height = page.evaluate("document.body.scrollHeight")
+        unchanged_count = 0
+        while True:
+            page.evaluate("window.scrollTo(0, document.body.scrollHeight)")
+            try:
+                page.wait_for_load_state("networkidle", timeout=10000)
+            except:
+                pass
+            time.sleep(0.5)
+            new_height = page.evaluate("document.body.scrollHeight")
+            if new_height == last_height:
+                unchanged_count += 1
+                if unchanged_count >= 3:
+                    break
+            else:
+                unchanged_count = 0
+                last_height = new_height
+
+    # برگرد به بالای container یا صفحه
+    if scroll_element:
+        page.evaluate(f"document.querySelector('{container_selector}').scrollTo(0, 0)")
+    else:
+        page.evaluate("window.scrollTo(0, 0)")
+    time.sleep(0.3)
+
+def expand_container_for_full_page_screenshot(page, container_selector):
+    """
+    استایل container را طوری تغییر می‌دهد که کل محتوایش نمایان شود و
+    body نیز کل آن را در بر بگیرد تا اسکرین‌شات full_page صحیح کار کند.
+    """
+    if not container_selector:
+        return
+    print(f"گسترش container برای اسکرین‌شات کامل...")
+    # ذخیره استایل‌های قبلی (اختیاری برای بازگردانی)
+    page.evaluate(f"""
+        const el = document.querySelector('{container_selector}');
+        if (el) {{
+            el.style.overflow = 'visible';
+            el.style.height = 'auto';
+            el.style.maxHeight = 'none';
+        }}
+    """)
+    # کمی صبر کن تا ری‌فلوی صفحه انجام شود
+    time.sleep(0.5)
+
+def wait_for_all_media(page):
+    print("منتظر بارگذاری کامل عکس‌ها و ویدیوها...")
     try:
         page.wait_for_function("""
             () => {
-                const images = Array.from(document.querySelectorAll('img[loading="lazy"], img:not([src]), img[data-src]'));
-                const allImagesLoaded = images.every(img => img.complete && img.naturalWidth > 0);
-                
+                const imgs = Array.from(document.images);
+                const allImgs = imgs.every(img => img.complete && img.naturalWidth > 0);
                 const videos = Array.from(document.querySelectorAll('video'));
-                const allVideosReady = videos.every(video => video.readyState >= 2); // HAVE_CURRENT_DATA
-                
-                return allImagesLoaded && allVideosReady;
+                const allVideos = videos.every(v => v.readyState >= 2);
+                return allImgs && allVideos;
             }
-        """, timeout=timeout)
-        print("عکس‌ها و ویدیوها با موفقیت بارگذاری شدند.")
+        """, timeout=15000)
+        print("عکس‌ها و ویدیوها کامل بارگذاری شدند.")
     except Exception as e:
-        print(f"اخطار: زمان انتظار برای بارگذاری رسانه‌ها به پایان رسید: {e}")
-
-def scroll_to_load_lazy_content(page):
-    """کل صفحه را اسکرول می‌کند و برمی‌گردد تا محتوای lazy-loaded بارگذاری شود."""
-    print("در حال اسکرول صفحه برای فعال‌سازی lazy loading...")
-    try:
-        scroll_height = page.evaluate("document.body.scrollHeight")
-        current_position = 0
-        step = 500  # هر بار ۵۰۰ پیکسل اسکرول کن
-
-        while current_position < scroll_height:
-            page.evaluate(f"window.scrollTo(0, {current_position})")
-            time.sleep(0.2)  # کمی صبر کن تا محتوا شروع به بارگذاری کنه
-            current_position += step
-        
-        # یک بار تا ته صفحه برو
-        page.evaluate(f"window.scrollTo(0, document.body.scrollHeight)")
-        time.sleep(0.5)
-
-        # برگرد به بالای صفحه برای گرفتن اسکرین‌شات کامل
-        page.evaluate("window.scrollTo(0, 0)")
-        time.sleep(0.3)
-        print("اسکرول کامل شد.")
-    except Exception as e:
-        print(f"خطا در هنگام اسکرول: {e}")
+        print(f"⚠️ زمان انتظار برای رسانه‌ها تمام شد: {e}")
 
 def take_screenshot_and_extract_links(url, full_page=True):
     os.makedirs("output", exist_ok=True)
     links = []
     with sync_playwright() as p:
         browser = p.chromium.launch()
-        page = browser.new_page()
+        page = browser.new_page(viewport={"width": 1280, "height": 800})
         try:
-            print(f"در حال بارگذاری صفحه: {url}")
+            print(f"بارگذاری صفحه: {url}")
             page.goto(url, timeout=30000)
-            
-            # 1. صبر کن تا وضعیت شبکه به load برسه
             page.wait_for_load_state("load")
-            
-            # 2. اسکرول کن تا محتوای lazy فعال بشه
-            scroll_to_load_lazy_content(page)
-            
-            # 3. صبر کن تا عکس‌ها و ویدیوها کامل بارگذاری بشن
-            wait_for_media_to_load(page)
-            
-            print("در حال گرفتن اسکرین‌شات...")
-            # 4. اسکرین‌شات با توجه به تنظیم full_page
-            page.screenshot(path="output/screenshot.png", full_page=full_page)
-            print("اسکرین‌شات گرفته شد.")
 
-            # 5. استخراج لینک‌ها
-            anchor_elements = page.query_selector_all("a[href]")
-            for a in anchor_elements:
+            # ۱. تشخیص container اسکرول (اگر وجود داشته باشد)
+            container = find_scrollable_container(page)
+
+            # ۲. اسکرول هوشمند در container یا بدنه
+            intelligent_scroll(page, container)
+
+            # ۳. منتظر ماندن برای لود عکس‌ها و ویدیوها
+            wait_for_all_media(page)
+
+            # ۴. اگر container بود، گسترشش بده تا body کل محتوا رو ببینه
+            if container:
+                expand_container_for_full_page_screenshot(page, container)
+
+            # ۵. اسکرین‌شات (full_page=True با توجه به انتخاب)
+            print("گرفتن اسکرین‌شات...")
+            page.screenshot(path="output/screenshot.png", full_page=full_page)
+            print("اسکرین‌شات ذخیره شد.")
+
+            # ۶. استخراج لینک‌ها
+            anchors = page.query_selector_all("a[href]")
+            for a in anchors:
                 href = a.get_attribute("href")
                 if href:
-                    absolute_url = urljoin(url, href)
-                    links.append(absolute_url)
+                    links.append(urljoin(url, href))
 
-            # حذف تکراری‌ها
-            seen = set()
-            unique_links = []
-            for link in links:
-                if link not in seen:
-                    seen.add(link)
-                    unique_links.append(link)
-
+            unique_links = list(dict.fromkeys(links))
             with open("output/links.txt", "w", encoding="utf-8") as f:
                 f.write(f"All links found on: {url}\n")
                 f.write("=" * 60 + "\n")
@@ -120,11 +195,7 @@ def take_screenshot_and_extract_links(url, full_page=True):
 def main():
     query = os.environ.get("INPUT_QUERY", "").strip()
     full_page_option = os.environ.get("INPUT_FULL_PAGE", "").strip()
-    
-    # تبدیل گزینه به True/False
-    full_page = True  # پیش‌فرض کل صفحه
-    if "نه" in full_page_option:
-        full_page = False
+    full_page = False if "نه" in full_page_option else True
 
     os.makedirs("output", exist_ok=True)
 
