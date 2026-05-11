@@ -11,7 +11,7 @@ on:
         required: false
         default: '5'
       quality:
-        description: 'کیفیت فیلم‌ها'
+        description: 'کیفیت فیلم‌ها (در صورت پشتیبانی)'
         required: true
         type: choice
         options:
@@ -43,6 +43,11 @@ jobs:
         run: |
           pip install requests playwright yt-dlp
           playwright install --with-deps chromium
+
+      - name: Setup Deno (for yt-dlp)
+        uses: denoland/setup-deno@v1
+        with:
+          deno-version: v2.x
 
       - name: Run media downloader
         env:
