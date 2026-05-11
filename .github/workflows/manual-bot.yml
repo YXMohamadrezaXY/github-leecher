@@ -11,6 +11,9 @@ on:
 jobs:
   run:
     runs-on: ubuntu-latest
+    permissions:
+      contents: write   # اجازه‌ی نوشتن توی ریپو
+    
     steps:
       - uses: actions/checkout@v4
 
@@ -28,8 +31,12 @@ jobs:
           INPUT_QUERY: ${{ github.event.inputs.query }}
         run: python scripts/manual_handler.py
 
-      - name: Upload result as artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: bot-result
-          path: output/
+      - name: Commit and push results
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add output/
+          git commit -m "افزودن خروجی جدید" || echo "No changes to commit"
+          git push
