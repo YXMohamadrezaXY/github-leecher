@@ -7,13 +7,21 @@ on:
         description: 'عبارت جستجو یا لینک صفحه (با http شروع شود)'
         required: true
         default: 'python'
+      full_page:
+        description: 'اسکرین‌شات طولانی (کل صفحه) یا فقط نمای قابل مشاهده؟'
+        required: true
+        type: choice
+        options:
+          - 'بله (کل صفحه)'
+          - 'نه (فقط نمای قابل مشاهده)'
+        default: 'بله (کل صفحه)'
 
 jobs:
   run:
     runs-on: ubuntu-latest
     permissions:
-      contents: write   # اجازه‌ی نوشتن توی ریپو
-    
+      contents: write
+
     steps:
       - uses: actions/checkout@v4
 
@@ -29,6 +37,7 @@ jobs:
       - name: Run handler
         env:
           INPUT_QUERY: ${{ github.event.inputs.query }}
+          INPUT_FULL_PAGE: ${{ github.event.inputs.full_page }}
         run: python scripts/manual_handler.py
 
       - name: Commit and push results
