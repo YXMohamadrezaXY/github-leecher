@@ -1,0 +1,46 @@
+name: Issue Bot (Search & Screenshot)
+
+on:
+  issues:
+    types: [opened]
+
+jobs:
+  handle-issue:
+    runs-on: ubuntu-latest
+    # فقط برای Issueهایی که توسط کاربران غیر‌ربات باز شدن (جلوگیری از حلقه)
+    if: github.event.issue.user.type != 'Bot'
+    permissions:
+      issues: write   # برای کامنت گذاشتن و آپلود فایل
+      contents: read
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: |
+          pip install requests playwright
+          playwright install --with-deps chromium
+
+      - name: Run handler script
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          ISSUE_TITLE: ${{ github.event.issue.title }}
+          ISSUE_BODY: ${{ github.event.issue.body }}
+          ISSUE_NUMBER: ${{ github.event.issue.number }}
+          REPO: ${{ github.repository }}
+        run: python scripts/issue_handler.py
+
+      - name: Upload screenshot or files (if any)
+        # فقط اگر اسکریپت فایل خروجی تولید کرد، آپلود کن
+        if: hashFiles('output/screenshot.png') != ''
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          ISSUE_NUMBER: ${{ github.event.issue.number }}
+        run: |
+          gh issue comment $ISSUE_NUMBER --body "📸 اسکرین‌شات پیوست شد."
+          gh issue upload $ISSUE_NUMBER output/screenshot.png
