@@ -10,6 +10,17 @@ on:
         description: 'حداکثر تعداد فیلم (مستقیم + جاسازی)'
         required: false
         default: '5'
+      quality:
+        description: 'کیفیت فیلم‌های جاسازی شده'
+        required: true
+        type: choice
+        options:
+          - 'بهترین کیفیت'
+          - '1080p'
+          - '720p'
+          - '480p'
+          - '360p'
+        default: 'بهترین کیفیت'
 
 jobs:
   download:
@@ -37,6 +48,7 @@ jobs:
         env:
           INPUT_URL: ${{ github.event.inputs.url }}
           INPUT_MAX_VIDEOS: ${{ github.event.inputs.max_videos }}
+          INPUT_QUALITY: ${{ github.event.inputs.quality }}
         run: python scripts/media_downloader.py
 
       - name: Commit downloaded media
