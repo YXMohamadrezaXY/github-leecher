@@ -7,17 +7,14 @@ on:
 jobs:
   handle-issue:
     runs-on: ubuntu-latest
-    # فقط برای Issueهایی که توسط کاربران غیر‌ربات باز شدن (جلوگیری از حلقه)
     if: github.event.issue.user.type != 'Bot'
     permissions:
-      issues: write   # برای کامنت گذاشتن و آپلود فایل
+      issues: write
       contents: read
     steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
 
-      - name: Set up Python
-        uses: actions/setup-python@v5
+      - uses: actions/setup-python@v5
         with:
           python-version: '3.11'
 
@@ -26,7 +23,7 @@ jobs:
           pip install requests playwright
           playwright install --with-deps chromium
 
-      - name: Run handler script
+      - name: Run handler
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           ISSUE_TITLE: ${{ github.event.issue.title }}
@@ -35,8 +32,16 @@ jobs:
           REPO: ${{ github.repository }}
         run: python scripts/issue_handler.py
 
-      - name: Upload screenshot or files (if any)
-        # فقط اگر اسکریپت فایل خروجی تولید کرد، آپلود کن
+      # قدم جدید برای ارسال کامنت متنی
+      - name: Post text reply
+        if: hashFiles('output/reply.txt') != ''
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          ISSUE_NUMBER: ${{ github.event.issue.number }}
+        run: gh issue comment $ISSUE_NUMBER --body "$(cat output/reply.txt)"
+
+      # قدم آپلود اسکرین‌شات (در صورت وجود)
+      - name: Upload screenshot
         if: hashFiles('output/screenshot.png') != ''
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
