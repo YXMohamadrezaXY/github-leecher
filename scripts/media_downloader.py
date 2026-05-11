@@ -33,12 +33,18 @@ def download_file(url, save_path, headers=None):
 
 def extract_images(page, url):
     print("استخراج عکس‌ها...")
-    page.wait_for_load_state("networkidle")
+    try:
+        page.wait_for_load_state("networkidle", timeout=10000)
+    except:
+        pass
     time.sleep(1)
     page.evaluate("window.scrollTo(0, document.body.scrollHeight)")
     time.sleep(1.5)
     page.evaluate("window.scrollTo(0, 0)")
-    page.wait_for_load_state("networkidle")
+    try:
+        page.wait_for_load_state("networkidle", timeout=10000)
+    except:
+        pass
 
     images = []
     for img in page.query_selector_all("img"):
@@ -58,25 +64,29 @@ def extract_images(page, url):
     return images
 
 def capture_video_urls(page, url, max_videos=5):
-    """
-    با رهگیری شبکه، همهٔ درخواست‌های ویدئویی را ضبط می‌کند.
-    برای فعال‌سازی پخش، صفحه را reload می‌کند و کمی صبر می‌کند.
-    """
     video_urls = []
     video_extensions = (".mp4", ".webm", ".m3u8", ".ts", ".mkv", ".mov", ".avi", ".flv")
 
     def intercept(request):
-        if request.resource_type == "media" or any(request.url.lower().endswith(ext) for ext in video_extensions):
-            if request.url not in video_urls:
-                video_urls.append(request.url)
-        request.continue_()
+        try:
+            if request.resource_type == "media" or any(request.url.lower().endswith(ext) for ext in video_extensions):
+                if request.url not in video_urls:
+                    video_urls.append(request.url)
+            request.continue_()
+        except:
+            request.continue_()
 
     page.route("**/*", intercept)
-    print("بارگذاری مجدد صفحه برای رهگیری ویدئوها...")
-    page.goto(url, timeout=30000)
-    # صبر برای پخش ویدئوها
-    print("منتظر دریافت فایل‌های ویدئویی توسط مرورگر...")
-    time.sleep(8)  # می‌توانید تا 15 ثانیه افزایش دهید
+    print("بارگذاری مجدد برای رهگیری ویدئوها...")
+    try:
+        page.goto(url, timeout=30000)
+    except Exception as e:
+        print(f"خطا در بارگذاری مجدد: {e}")
+        page.unroute("**/*")
+        return []
+
+    print("منتظر دریافت فایل‌های ویدئویی...")
+    time.sleep(8)
     page.unroute("**/*")
 
     unique = list(dict.fromkeys(video_urls))
@@ -113,19 +123,24 @@ def main():
         try:
             page.goto(url, timeout=30000)
         except Exception as e:
-            print(f"خطا در بارگذاری: {e}")
+            print(f"خطا در بارگذاری اولیه: {e}")
             browser.close()
             with open(f"{output_dir}/report.txt", "w", encoding="utf-8") as f:
                 f.write(f"❌ خطا در بارگذاری: {e}")
             return
 
-        # عکس‌ها از همین صفحه
+        # عکس‌ها
         images = extract_images(page, url)
 
-        # یک صفحهٔ جدید برای رهگیری ویدئوها (تا با عکس‌ها تداخل نکند)
+        # یک صفحه جدید برای ویدئوها
         page2 = context.new_page()
-        video_urls = capture_video_urls(page2, url, max_videos)
-        page2.close()
+        try:
+            video_urls = capture_video_urls(page2, url, max_videos)
+        except Exception as e:
+            print(f"خطا در رهگیری ویدئوها: {e}")
+            video_urls = []
+        finally:
+            page2.close()
         browser.close()
 
     # دانلود عکس‌ها
@@ -150,10 +165,15 @@ def main():
             outtmpl = os.path.join(vid_dir, "%(title)s.%(ext)s")
             cmd = ["yt-dlp", "-f", "best", "--no-playlist", "--max-filesize", "500M", "-o", outtmpl, video_url]
             try:
-                subprocess.run(cmd, check=True, capture_output=True, text=True, timeout=120)
-                vid_downloaded += 1
+                result = subprocess.run(cmd, capture_output=True, text=True, timeout=120)
+                if result.returncode == 0:
+                    vid_downloaded += 1
+                else:
+                    print(f"yt-dlp شکست خورد: {result.stderr}")
+            except subprocess.TimeoutExpired:
+                print("yt-dlp زمان‌بر شد.")
             except Exception as e:
-                print(f"yt-dlp شکست خورد: {e}")
+                print(f"خطا در yt-dlp: {e}")
         else:
             fname = sanitize_filename(video_url, ext=ext if ext else "mp4")
             headers = {"Referer": url}
