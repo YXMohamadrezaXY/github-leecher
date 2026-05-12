@@ -3,11 +3,10 @@ import time
 import requests
 import subprocess
 import re
-import json
 from urllib.parse import urljoin, urlparse
 from playwright.sync_api import sync_playwright
 
-# ---------- ابزارهای کمکی ----------
+# ---------- توابع کمکی ----------
 def sanitize_filename(url, ext=None):
     parsed = urlparse(url)
     base = os.path.basename(parsed.path)
@@ -34,6 +33,7 @@ def download_file(url, save_path, headers=None):
         print(f"خطا در دانلود مستقیم {url}: {e}")
         return False
 
+# ---------- استخراج عکس ----------
 def extract_images(page, url):
     print("🖼️ استخراج عکس‌ها...")
     try:
@@ -66,9 +66,9 @@ def extract_images(page, url):
     print(f"{len(images)} عکس واجد شرایط پیدا شد.")
     return images
 
-# ---------- رهگیری شبکه برای فایل‌های ویدئویی ----------
-def capture_video_urls_from_network(page, url, max_videos=5, wait_seconds=15):
-    """تمام فایل‌های ویدئویی (mp4, webm, m3u8, ...) که مرورگر دانلود می‌کند را جمع‌آوری می‌کند."""
+# ---------- رهگیری شبکه (لایه اول) ----------
+def capture_media_urls(page, url, max_videos=5, wait_seconds=15):
+    """تمام درخواست‌های رسانه‌ای (mp4, webm, m3u8, ...) را جمع می‌کند."""
     video_urls = []
     video_extensions = (".mp4", ".webm", ".m3u8", ".ts", ".mkv", ".mov", ".avi", ".flv")
 
@@ -90,6 +90,13 @@ def capture_video_urls_from_network(page, url, max_videos=5, wait_seconds=15):
         page.unroute("**/*")
         return []
 
+    # انجام اسکرول برای فعال‌سازی پخش ویدئوهای تنبل
+    print("📜 اسکرول صفحه برای فعال‌سازی محتوای تنبل...")
+    for _ in range(3):
+        page.evaluate("window.scrollBy(0, 300)")
+        time.sleep(0.5)
+    page.evaluate("window.scrollTo(0, 0)")
+    
     print(f"⏳ منتظر دریافت فایل‌های ویدئویی ({wait_seconds} ثانیه)...")
     time.sleep(wait_seconds)
     page.unroute("**/*")
@@ -101,9 +108,8 @@ def capture_video_urls_from_network(page, url, max_videos=5, wait_seconds=15):
         print(f"   {v}")
     return final
 
-# ---------- yt-dlp با Invidious (برای یوتیوب و موارد مشابه) ----------
+# ---------- Invidious (برای یوتیوب بدون تحریم) ----------
 def get_best_invidious_instance():
-    """یک اینستنس Invidious سالم و سریع برمی‌گرداند."""
     try:
         resp = requests.get("https://api.invidious.io/instances.json?sort=health", timeout=10)
         data = resp.json()
@@ -119,30 +125,27 @@ def get_best_invidious_instance():
     return None
 
 def convert_youtube_to_invidious(url):
-    """اگر لینک یوتیوب باشد، به لینک معادل در یک Invidious تبدیل می‌کند."""
     parsed = urlparse(url)
     if "youtube.com" in parsed.netloc or "youtu.be" in parsed.netloc:
         if "youtu.be" in parsed.netloc:
             vid_id = parsed.path.strip("/")
         else:
-            # استخراج v= از query string
             qs = dict(part.split("=", 1) for part in parsed.query.split("&") if "=" in part)
             vid_id = qs.get("v")
         if vid_id:
             instance = get_best_invidious_instance()
             if instance:
                 return f"{instance}/watch?v={vid_id}"
-    return url  # تغییر نمی‌دهد
+    return url
 
+# ---------- yt-dlp قدرتمند (لایه دوم) ----------
 def download_with_ytdlp(url, output_dir, max_videos, quality="best"):
-    """yt-dlp با Deno، بدون کوکی. اگر url یوتیوب باشد ابتدا به Invidious تبدیل می‌شود."""
-    # تبدیل خودکار یوتیوب
-    original_url = url
-    url = convert_youtube_to_invidious(url)
-    if url != original_url:
-        print(f"🔄 تبدیل یوتیوب به Invidious: {url}")
-
+    """yt-dlp با Deno، هدر Referer، و bypass جغرافیایی"""
     print(f"📥 استفاده از yt-dlp برای دانلود از: {url}")
+    
+    # تبدیل یوتیوب به Invidious (بدون کوکی)
+    url = convert_youtube_to_invidious(url)
+    
     outtmpl = os.path.join(output_dir, "%(title)s.%(ext)s")
     cmd = [
         "yt-dlp",
@@ -151,6 +154,9 @@ def download_with_ytdlp(url, output_dir, max_videos, quality="best"):
         "--no-playlist",
         "--max-downloads", str(max_videos),
         "--max-filesize", "500M",
+        "--geo-bypass",
+        "--add-header", f"Referer:{url}",  # اضافه کردن Referer
+        "--user-agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
         "-o", outtmpl,
         url
     ]
@@ -160,39 +166,25 @@ def download_with_ytdlp(url, output_dir, max_videos, quality="best"):
         if result.returncode != 0:
             print(f"yt-dlp خطا:\n{result.stderr}")
             # تلاش با best
-            fallback_cmd = [
-                "yt-dlp",
-                "-f", "best",
-                "--js-runtimes", "deno",
-                "--no-playlist",
-                "--max-downloads", str(max_videos),
-                "--max-filesize", "500M",
-                "-o", outtmpl,
-                url
-            ]
+            fallback_cmd = [arg if arg != quality else "best" for arg in cmd]
             result2 = subprocess.run(fallback_cmd, capture_output=True, text=True, timeout=300)
             if result2.returncode == 0:
                 print("fallback to best succeeded")
             else:
                 print(f"fallback also failed:\n{result2.stderr}")
                 return 0
-        # شمارش فایل‌های جدید
         count = len([f for f in os.listdir(output_dir) if os.path.isfile(os.path.join(output_dir, f))])
         return count
     except Exception as e:
         print(f"yt-dlp exception: {e}")
         return 0
 
-# ---------- منطق اصلی ----------
+# ---------- تابع اصلی ----------
 def main():
     url = os.environ["INPUT_URL"].strip()
     max_videos = int(os.environ.get("INPUT_MAX_VIDEOS", "5"))
     quality_input = os.environ.get("INPUT_QUALITY", "بهترین کیفیت").strip()
-    # تبدیل کیفیت به فرمت مناسب
-    if quality_input == "بهترین کیفیت":
-        ytdl_quality = "best"
-    else:
-        ytdl_quality = quality_input  # yt-dlp متوجه می‌شود (مثلاً 720)
+    ytdl_quality = "best" if quality_input == "بهترین کیفیت" else quality_input
 
     if not url.startswith("http"):
         print("آدرس باید با http شروع شود.")
@@ -205,7 +197,6 @@ def main():
     os.makedirs(img_dir, exist_ok=True)
     os.makedirs(vid_dir, exist_ok=True)
 
-    # === ۱. بارگذاری صفحه و استخراج عکس‌ها + رهگیری ویدئوهای مستقیم ===
     with sync_playwright() as p:
         browser = p.chromium.launch()
         context = browser.new_context(
@@ -214,7 +205,7 @@ def main():
         )
         page = context.new_page()
 
-        print(f"🌐 بارگذاری صفحه: {url}")
+        print(f"🌐 بارگذاری اولیه: {url}")
         try:
             page.goto(url, timeout=30000)
         except Exception as e:
@@ -224,16 +215,15 @@ def main():
                 f.write(f"❌ خطا در بارگذاری: {e}")
             return
 
-        # عکس‌ها
         images = extract_images(page, url)
 
-        # رهگیری ویدئوهای مستقیم (از یک صفحه جدید)
+        # رهگیری شبکه (از یک صفحه جدید با rate limit)
         page2 = context.new_page()
-        video_urls = capture_video_urls_from_network(page2, url, max_videos, wait_seconds=15)
+        video_urls = capture_media_urls(page2, url, max_videos, wait_seconds=15)
         page2.close()
         browser.close()
 
-    # === ۲. دانلود عکس‌ها ===
+    # دانلود عکس‌ها
     img_downloaded = 0
     for img_url in images:
         fname = sanitize_filename(img_url)
@@ -242,10 +232,10 @@ def main():
         if download_file(img_url, os.path.join(img_dir, fname)):
             img_downloaded += 1
 
-    # === ۳. دانلود ویدئوها ===
+    # دانلود ویدئوها
     vid_downloaded = 0
     if video_urls:
-        # فایل‌های مستقیـم از شبکه
+        print("📁 استفاده از فایل‌های رهگیری‌شده...")
         for video_url in video_urls:
             ext = None
             for v_ext in ("mp4", "webm", "mkv", "mov", "avi", "flv", "ts", "m3u8"):
@@ -253,29 +243,22 @@ def main():
                     ext = v_ext
                     break
             if ext == "m3u8":
-                # برای HLS از yt-dlp سریع استفاده کن
                 outtmpl = os.path.join(vid_dir, "%(title)s.%(ext)s")
-                cmd = ["yt-dlp", "-f", "best", "--no-playlist", "--max-filesize", "500M", "-o", outtmpl, video_url]
-                try:
-                    subprocess.run(cmd, capture_output=True, text=True, timeout=120)
-                    vid_downloaded += 1
-                except:
-                    pass
+                subprocess.run(["yt-dlp", "-f", "best", "-o", outtmpl, video_url], capture_output=True, timeout=120)
+                vid_downloaded += 1
             else:
                 fname = sanitize_filename(video_url, ext=ext if ext else "mp4")
-                headers = {"Referer": url}
-                if download_file(video_url, os.path.join(vid_dir, fname), headers=headers):
+                if download_file(video_url, os.path.join(vid_dir, fname), headers={"Referer": url}):
                     vid_downloaded += 1
     else:
-        # هیچ فایل مستقیمی یافت نشد → yt-dlp (با Invidious برای یوتیوب)
-        print("🔍 رهگیری شبکه نتیجه‌ای نداشت → استفاده از yt-dlp")
+        print("🔍 رهگیری شبکه نتیجه‌ای نداشت → yt-dlp")
         vid_downloaded = download_with_ytdlp(url, vid_dir, max_videos, ytdl_quality)
 
-    # === ۴. گزارش ===
+    # گزارش
     report = f"✅ دانلود از {url} کامل شد.\n"
     report += f"🖼️ عکس‌های دانلود شده: {img_downloaded} از {len(images)}\n"
     report += f"🎥 فیلم‌های دانلود شده: {vid_downloaded} (حداکثر درخواستی: {max_videos})\n"
-    report += f"📁 فایل‌ها در پوشه‌های `output/media/images` و `output/media/videos` قرار دارند."
+    report += f"📁 فایل‌ها در `output/media` قرار دارند."
     with open(f"{output_dir}/report.txt", "w", encoding="utf-8") as f:
         f.write(report)
     print(report)
