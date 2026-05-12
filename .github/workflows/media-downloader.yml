@@ -41,7 +41,8 @@ jobs:
 
       - name: Install Python packages
         run: |
-          pip install requests playwright yt-dlp
+          pip install --upgrade yt-dlp
+          pip install requests playwright
           playwright install --with-deps chromium
 
       - name: Setup Deno (for yt-dlp)
