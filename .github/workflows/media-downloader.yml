@@ -1,17 +1,17 @@
-name: Media Downloader (Images & Videos)
+name: Universal Media Downloader
 
 on:
   workflow_dispatch:
     inputs:
       url:
-        description: 'آدرس صفحه (با http شروع شود)'
+        description: 'آدرس صفحه (هر سایتی)'
         required: true
       max_videos:
-        description: 'حداکثر تعداد فیلم (مستقیم + جاسازی)'
+        description: 'حداکثر تعداد فیلم'
         required: false
         default: '5'
       quality:
-        description: 'کیفیت فیلم‌های جاسازی شده'
+        description: 'کیفیت فیلم‌ها (در صورت پشتیبانی)'
         required: true
         type: choice
         options:
@@ -34,7 +34,7 @@ jobs:
         with:
           python-version: '3.11'
 
-      - name: Install system dependencies (ffmpeg)
+      - name: Install system dependencies (ffmpeg, deno)
         run: |
           sudo apt-get update
           sudo apt-get install -y ffmpeg
@@ -44,7 +44,12 @@ jobs:
           pip install requests playwright yt-dlp
           playwright install --with-deps chromium
 
-      - name: Run media downloader
+      - name: Setup Deno (for yt-dlp)
+        uses: denoland/setup-deno@v1
+        with:
+          deno-version: v2.x
+
+      - name: Run universal downloader
         env:
           INPUT_URL: ${{ github.event.inputs.url }}
           INPUT_MAX_VIDEOS: ${{ github.event.inputs.max_videos }}
