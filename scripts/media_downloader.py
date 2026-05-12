@@ -5,23 +5,19 @@ import subprocess
 from urllib.parse import urljoin, urlparse
 from playwright.sync_api import sync_playwright
 
-def sanitize_filename(url, ext=None):
+def sanitize_filename(url):
     parsed = urlparse(url)
     base = os.path.basename(parsed.path)
     if not base:
-        base = "video" if ext else "file"
+        base = "file"
     base = base.split("?")[0]
-    if ext and "." not in base:
-        base += f".{ext}"
     base = "".join(c if c.isalnum() or c in "._- " else "_" for c in base)
-    return base
+    return base if base else "downloaded_media"
 
-def download_file(url, save_path, headers=None):
+def download_file(url, save_path):
     try:
-        default_headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"}
-        if headers:
-            default_headers.update(headers)
-        r = requests.get(url, headers=default_headers, stream=True, timeout=60)
+        headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"}
+        r = requests.get(url, headers=headers, stream=True, timeout=30)
         r.raise_for_status()
         with open(save_path, "wb") as f:
             for chunk in r.iter_content(chunk_size=8192):
@@ -31,24 +27,54 @@ def download_file(url, save_path, headers=None):
         print(f"خطا در دانلود {url}: {e}")
         return False
 
-def extract_images(page, url):
-    print("استخراج عکس‌ها...")
-    try:
-        page.wait_for_load_state("networkidle", timeout=10000)
-    except:
-        pass
-    time.sleep(1)
-    page.evaluate("window.scrollTo(0, document.body.scrollHeight)")
-    time.sleep(1.5)
-    page.evaluate("window.scrollTo(0, 0)")
-    try:
-        page.wait_for_load_state("networkidle", timeout=10000)
-    except:
-        pass
+def map_quality_to_format(quality):
+    """تبدیل گزینه‌های انتخابی به فرمت yt-dlp"""
+    mapping = {
+        'بهترین کیفیت': 'best',
+        '1080p': 'bestvideo[height<=1080]+bestaudio/best[height<=1080]',
+        '720p': 'bestvideo[height<=720]+bestaudio/best[height<=720]',
+        '480p': 'bestvideo[height<=480]+bestaudio/best[height<=480]',
+        '360p': 'bestvideo[height<=360]+bestaudio/best[height<=360]'
+    }
+    return mapping.get(quality, 'best')
 
+def download_with_ytdlp(url, output_dir, quality):
+    """دانلود ویدئوی جاسازی شده با yt-dlp و کیفیت انتخابی."""
+    fmt = map_quality_to_format(quality)
+    print(f"دانلود با yt-dlp (کیفیت: {quality}): {url}")
+    outtmpl = os.path.join(output_dir, "%(title)s.%(ext)s")
+    cmd = [
+        "yt-dlp",
+        "-f", fmt,
+        "--no-playlist",
+        "--max-filesize", "500M",
+        "-o", outtmpl,
+        url
+    ]
+    try:
+        result = subprocess.run(cmd, capture_output=True, text=True, timeout=120)
+        if result.returncode == 0:
+            print("yt-dlp موفق بود.")
+            return True
+        else:
+            print(f"yt-dlp خطا داد:\n{result.stderr}")
+            return False
+    except subprocess.TimeoutExpired:
+        print("yt-dlp زمان‌بر شد (بیش از ۲ دقیقه).")
+        return False
+    except Exception as e:
+        print(f"استثنا در yt-dlp: {e}")
+        return False
+
+def extract_media(page, url, max_videos=5):
+    page.wait_for_load_state("load")
+    time.sleep(2)
+
+    print("استخراج عکس‌ها...")
     images = []
-    for img in page.query_selector_all("img"):
-        src = img.get_attribute("src") or img.get_attribute("data-src")
+    img_elements = page.query_selector_all("img")
+    for img in img_elements:
+        src = img.get_attribute("src")
         if not src:
             continue
         absolute_url = urljoin(url, src)
@@ -58,121 +84,60 @@ def extract_images(page, url):
         except:
             width, height = 0, 0
         if width > 100 and height > 100:
-            if absolute_url not in images:
-                images.append(absolute_url)
+            images.append(absolute_url)
+    images = list(dict.fromkeys(images))
     print(f"{len(images)} عکس واجد شرایط پیدا شد.")
-    return images
 
-def capture_video_urls(page, url, max_videos=5, wait_seconds=12):
-    """رهگیری شبکه برای یافتن فایل‌های ویدئویی مستقیم."""
-    video_urls = []
-    video_extensions = (".mp4", ".webm", ".m3u8", ".ts", ".mkv", ".mov", ".avi", ".flv")
+    print("استخراج فیلم‌های مستقیم...")
+    direct_videos = []
+    video_elements = page.query_selector_all("video")
+    for video in video_elements:
+        src = video.get_attribute("src")
+        if not src:
+            source_elements = video.query_selector_all("source")
+            for source in source_elements:
+                src = source.get_attribute("src")
+                if src:
+                    break
+        if src:
+            absolute_url = urljoin(url, src)
+            if absolute_url not in direct_videos:
+                direct_videos.append(absolute_url)
 
-    def intercept(request):
-        try:
-            if request.resource_type == "media" or any(request.url.lower().endswith(ext) for ext in video_extensions):
-                if request.url not in video_urls:
-                    video_urls.append(request.url)
-            request.continue_()
-        except:
-            request.continue_()
-
-    page.route("**/*", intercept)
-    try:
-        page.goto(url, timeout=30000)
-    except Exception as e:
-        print(f"خطا در بارگذاری برای رهگیری: {e}")
-        page.unroute("**/*")
-        return []
-
-    print(f"منتظر دریافت فایل‌های ویدئویی (حداکثر {wait_seconds} ثانیه)...")
-    time.sleep(wait_seconds)
-    page.unroute("**/*")
-
-    unique = list(dict.fromkeys(video_urls))
-    final = unique[:max_videos]
-    print(f"تعداد فایل‌های ویدئویی یافت‌شده: {len(final)}")
-    for v in final:
-        print(f"  {v}")
-    return final
-
-def get_best_invidious_instance():
-    """یک اینستنس Invidious که سالم باشد برمی‌گرداند."""
-    try:
-        resp = requests.get("https://api.invidious.io/instances.json?sort=health", timeout=10)
-        data = resp.json()
-        for item in data:
-            if isinstance(item, list) and len(item) > 1:
-                info = item[1]
-                if info.get("type") == "https" and info.get("api") and info["monitor"]["statusClass"] == "success":
-                    uri = info["uri"]
-                    print(f"استفاده از Invidious instance: {uri}")
-                    return uri.rstrip("/")
-    except Exception as e:
-        print(f"خطا در دریافت لیست Invidious: {e}")
-    return None
-
-def convert_youtube_to_invidious(url):
-    """اگر لینک یوتیوب باشد، تبدیل به لینک Invidious می‌کند."""
-    parsed = urlparse(url)
-    if "youtube.com" in parsed.netloc or "youtu.be" in parsed.netloc:
-        if "youtu.be" in parsed.netloc:
-            vid_id = parsed.path.strip("/")
-        else:
-            qs = dict(part.split("=") for part in parsed.query.split("&") if "=" in part)
-            vid_id = qs.get("v")
-        if vid_id:
-            instance = get_best_invidious_instance()
-            if instance:
-                return f"{instance}/watch?v={vid_id}"
-    return url
-
-def download_videos_with_ytdlp(url, output_dir, max_videos, quality="best"):
-    """استفاده از yt-dlp با Deno."""
-    print(f"استفاده از yt-dlp برای دانلود ویدئوها از: {url}")
-    outtmpl = os.path.join(output_dir, "%(title)s.%(ext)s")
-    cmd = [
-        "yt-dlp",
-        "-f", quality,
-        "--js-runtimes", "deno",
-        "--no-playlist",
-        "--max-downloads", str(max_videos),
-        "--max-filesize", "500M",
-        "-o", outtmpl,
-        url
+    print("استخراج فیلم‌های جاسازی شده (iframe)...")
+    embedded_urls = []
+    iframe_elements = page.query_selector_all("iframe")
+    known_video_domains = [
+        "youtube.com", "youtu.be",
+        "vimeo.com",
+        "dailymotion.com",
+        "twitch.tv",
+        "facebook.com/plugins/video",
+        "player.vimeo.com",
+        "video.ibm.com",
+        "vlive.tv"
     ]
-    try:
-        result = subprocess.run(cmd, capture_output=True, text=True, timeout=300)
-        print(result.stdout)
-        if result.returncode != 0:
-            print(f"yt-dlp خطا:\n{result.stderr}")
-            fallback_cmd = [
-                "yt-dlp",
-                "-f", "best",
-                "--js-runtimes", "deno",
-                "--no-playlist",
-                "--max-downloads", str(max_videos),
-                "--max-filesize", "500M",
-                "-o", outtmpl,
-                url
-            ]
-            result2 = subprocess.run(fallback_cmd, capture_output=True, text=True, timeout=300)
-            if result2.returncode == 0:
-                print("fallback to best succeeded")
-            else:
-                print(f"fallback also failed:\n{result2.stderr}")
-                return 0
-        count = len([f for f in os.listdir(output_dir) if os.path.isfile(os.path.join(output_dir, f))])
-        return count
-    except Exception as e:
-        print(f"yt-dlp exception: {e}")
-        return 0
+    for iframe in iframe_elements:
+        src = iframe.get_attribute("src")
+        if not src:
+            continue
+        src_absolute = urljoin(url, src)
+        parsed = urlparse(src_absolute)
+        domain = parsed.netloc.lower()
+        if any(k in domain for k in known_video_domains):
+            if src_absolute not in embedded_urls:
+                embedded_urls.append(src_absolute)
+
+    all_videos = direct_videos + embedded_urls
+    unique_videos = list(dict.fromkeys(all_videos))
+    final_videos = unique_videos[:max_videos]
+    print(f"مجموعاً {len(final_videos)} فیلم برای دانلود انتخاب شد.")
+    return images, final_videos
 
 def main():
     url = os.environ["INPUT_URL"].strip()
     max_videos = int(os.environ.get("INPUT_MAX_VIDEOS", "5"))
     quality = os.environ.get("INPUT_QUALITY", "بهترین کیفیت").strip()
-    quality = "best" if quality == "بهترین کیفیت" else quality
 
     if not url.startswith("http"):
         print("آدرس باید با http شروع شود.")
@@ -180,80 +145,54 @@ def main():
 
     output_dir = "output/media"
     os.makedirs(output_dir, exist_ok=True)
-    img_dir = os.path.join(output_dir, "images")
-    vid_dir = os.path.join(output_dir, "videos")
-    os.makedirs(img_dir, exist_ok=True)
-    os.makedirs(vid_dir, exist_ok=True)
 
-    # 1. استخراج عکس‌ها با Playwright
     with sync_playwright() as p:
         browser = p.chromium.launch()
-        context = browser.new_context(
-            viewport={"width": 1280, "height": 800},
-            user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
-        )
-        page = context.new_page()
-        print(f"بارگذاری اولیه: {url}")
+        page = browser.new_page(viewport={"width": 1280, "height": 800})
+        print(f"بارگذاری صفحه: {url}")
         try:
             page.goto(url, timeout=30000)
         except Exception as e:
-            print(f"خطا در بارگذاری اولیه: {e}")
+            print(f"خطا در بارگذاری: {e}")
             browser.close()
             with open(f"{output_dir}/report.txt", "w", encoding="utf-8") as f:
                 f.write(f"❌ خطا در بارگذاری: {e}")
             return
-        images = extract_images(page, url)
 
-        # 2. رهگیری شبکه برای ویدئوهای مستقیم
-        page2 = context.new_page()
-        video_urls = capture_video_urls(page2, url, max_videos)
-        page2.close()
+        images, videos = extract_media(page, url, max_videos)
         browser.close()
 
     # دانلود عکس‌ها
-    img_downloaded = 0
+    img_dir = os.path.join(output_dir, "images")
+    os.makedirs(img_dir, exist_ok=True)
+    downloaded_images = 0
     for img_url in images:
         fname = sanitize_filename(img_url)
         if "." not in fname:
             fname += ".jpg"
-        if download_file(img_url, os.path.join(img_dir, fname)):
-            img_downloaded += 1
+        save_path = os.path.join(img_dir, fname)
+        if download_file(img_url, save_path):
+            downloaded_images += 1
 
-    # دانلود ویدئوها
-    vid_downloaded = 0
-    if video_urls:
-        # فیلم‌های مستقیم پیدا شده با رهگیری
-        for video_url in video_urls:
-            ext = None
-            for v_ext in ("mp4", "webm", "mkv", "mov", "avi", "flv", "ts", "m3u8"):
-                if video_url.lower().endswith(v_ext):
-                    ext = v_ext
-                    break
-            if ext == "m3u8":
-                print(f"دانلود HLS با yt-dlp: {video_url}")
-                outtmpl = os.path.join(vid_dir, "%(title)s.%(ext)s")
-                cmd = ["yt-dlp", "-f", "best", "--no-playlist", "--max-filesize", "500M", "-o", outtmpl, video_url]
-                try:
-                    subprocess.run(cmd, capture_output=True, text=True, timeout=120)
-                    vid_downloaded += 1
-                except Exception as e:
-                    print(f"خطا در yt-dlp: {e}")
-            else:
-                fname = sanitize_filename(video_url, ext=ext if ext else "mp4")
-                headers = {"Referer": url}
-                if download_file(video_url, os.path.join(vid_dir, fname), headers=headers):
-                    vid_downloaded += 1
-    else:
-        # رهگیری چیزی نیافت => تبدیل یوتیوب یا yt-dlp مستقیم
-        converted_url = convert_youtube_to_invidious(url)
-        if converted_url != url:
-            print(f"تبدیل لینک یوتیوب به Invidious: {converted_url}")
-        vid_downloaded = download_videos_with_ytdlp(converted_url, vid_dir, max_videos, quality)
+    # دانلود فیلم‌ها
+    vid_dir = os.path.join(output_dir, "videos")
+    os.makedirs(vid_dir, exist_ok=True)
+    downloaded_videos = 0
+    direct_extensions = (".mp4", ".webm", ".ogg", ".mkv", ".avi", ".mov", ".flv")
+    for vid_url in videos:
+        if any(vid_url.lower().endswith(ext) for ext in direct_extensions):
+            fname = sanitize_filename(vid_url)
+            save_path = os.path.join(vid_dir, fname)
+            if download_file(vid_url, save_path):
+                downloaded_videos += 1
+        else:
+            if download_with_ytdlp(vid_url, vid_dir, quality):
+                downloaded_videos += 1
 
-    # گزارش نهایی
     report = f"✅ دانلود از {url} کامل شد.\n"
-    report += f"🖼️ عکس‌های دانلود شده: {img_downloaded} از {len(images)}\n"
-    report += f"🎥 فیلم‌های دانلود شده: {vid_downloaded} (حداکثر درخواستی: {max_videos})\n"
+    report += f"🖼️ عکس‌های دانلود شده: {downloaded_images} از {len(images)}\n"
+    report += f"🎥 فیلم‌های دانلود شده: {downloaded_videos} از {len(videos)}\n"
+    report += f"⚙️ کیفیت فیلم‌های جاسازی: {quality}\n"
     report += f"📁 فایل‌ها در پوشه‌های `output/media/images` و `output/media/videos` قرار دارند."
     with open(f"{output_dir}/report.txt", "w", encoding="utf-8") as f:
         f.write(report)
