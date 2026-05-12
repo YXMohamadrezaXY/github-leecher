@@ -57,6 +57,15 @@ jobs:
           INPUT_QUALITY: ${{ github.event.inputs.quality }}
         run: python scripts/media_downloader.py
 
+      - name: Compress large video files
+        run: |
+          find output/media -type f -size +50M \( -name "*.mp4" -o -name "*.mkv" \) | while read f; do
+            echo "Compressing $f (size: $(du -h "$f" | cut -f1))"
+            ffmpeg -i "$f" -c:v libx264 -crf 28 -preset veryfast -c:a aac -b:a 128k "${f%.*}_compressed.mp4" -y
+            mv "${f%.*}_compressed.mp4" "$f"
+            echo "New size: $(du -h "$f" | cut -f1)"
+          done
+
       - name: Commit downloaded media
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
