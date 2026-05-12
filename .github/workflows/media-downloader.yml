@@ -7,11 +7,11 @@ on:
         description: 'آدرس صفحه (با http شروع شود)'
         required: true
       max_videos:
-        description: 'حداکثر تعداد فیلم'
+        description: 'حداکثر تعداد فیلم (مستقیم + جاسازی)'
         required: false
         default: '5'
       quality:
-        description: 'کیفیت فیلم‌ها (در صورت پشتیبانی)'
+        description: 'کیفیت فیلم‌های جاسازی شده'
         required: true
         type: choice
         options:
@@ -43,11 +43,6 @@ jobs:
         run: |
           pip install requests playwright yt-dlp
           playwright install --with-deps chromium
-
-      - name: Setup Deno (for yt-dlp)
-        uses: denoland/setup-deno@v1
-        with:
-          deno-version: v2.x
 
       - name: Run media downloader
         env:
