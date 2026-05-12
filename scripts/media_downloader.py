@@ -6,14 +6,22 @@ import subprocess
 from urllib.parse import urljoin, urlparse
 from playwright.sync_api import sync_playwright
 
-MIN_IMAGE_SIZE_KB = 5  # عکس‌های کوچکتر از ۵ کیلوبایت را رد می‌کنیم (بندانگشتی‌ها)
+MIN_IMAGE_SIZE_KB = 5  # عکس‌های کوچکتر از ۵ کیلوبایت را رد می‌کنیم
 
 def sanitize_filename(url, ext=None):
+    """استخراج نام فایل معتبر از URL، با تشخیص پسوند."""
     parsed = urlparse(url)
     base = os.path.basename(parsed.path)
     if not base:
         base = "image" if ext else "file"
     base = base.split("?")[0]
+    # اگر پسوندی در URL باشد، از آن استفاده کن
+    if "." in base:
+        # جدا کردن پسوند از نام
+        name_part, url_ext = os.path.splitext(base)
+        if url_ext.lower() in (".jpg", ".jpeg", ".png", ".gif", ".webp", ".bmp"):
+            ext = url_ext[1:]  # حذف نقطه
+            base = name_part
     if ext and "." not in base:
         base += f".{ext}"
     return "".join(c if c.isalnum() or c in "._- " else "_" for c in base)
@@ -30,35 +38,72 @@ def download_file(url, save_path, headers=None):
                 f.write(chunk)
         return True
     except Exception as e:
-        print(f"خطا در دانلود {url}: {e}")
+        print(f"❌ خطا در دانلود {url}: {e}")
         return False
 
+def convert_to_original(url):
+    """
+    تبدیل URL پینترست به نسخه اصلی (originals).
+    - جایگزینی /736x/، /474x/، /236x/ با /originals/
+    - تغییر پسوند به png در صورت نیاز
+    """
+    if "pinimg.com" not in url:
+        return url
+
+    # جایگزینی سایز با originals
+    modified = re.sub(r'/\d+x/', '/originals/', url)
+
+    # اگر URL اصلی همان قبلی بود و originals در آن نیست، اضافه کن
+    if "/originals/" not in modified:
+        # الگوی دیگر: i.pinimg.com/236x/... --> i.pinimg.com/originals/...
+        modified = re.sub(
+            r'(i\.pinimg\.com)/(\d+x)/',
+            r'\1/originals/',
+            modified
+        )
+
+    # برخی تصاویر originals کیفیت بالاتری دارند، اما ممکن است jpg به png تبدیل شوند
+    # (همانطور که در مستندات مشاهده شد)
+    # این تغییر اختیاری است و می‌تواند کمک کند
+    if "/originals/" in modified:
+        # اگر پسوند jpg بود، سعی نکنیم به png تغییر دهیم (احتمال خطا)
+        pass
+
+    return modified
+
 def extract_image_src(el):
-    """از یک المنت img بهترین منبع را استخراج می‌کند."""
+    """بهترین منبع تصویر را با اولویت کیفیت اصلی Pinterest برمی‌گرداند."""
     # ۱. srcset (بیشترین وضوح)
     srcset = el.get_attribute("srcset")
     if srcset:
         candidates = re.findall(r'(\S+)\s+(\d+)w', srcset)
         if candidates:
-            # انتخاب تصویر با بیشترین عرض
             best = max(candidates, key=lambda x: int(x[1]))
-            return best[0]
-    # ۲. data-src / data-original
+            print(f"   📸 انتخاب از srcset: {best[1]}w -> {best[0][:80]}")
+            return convert_to_original(best[0])
+
+    # ۲. data-src / data-original / ...
     for attr in ("data-src", "data-original", "data-lazy-src", "data-srcset"):
         val = el.get_attribute(attr)
         if val:
-            # اگر srcset باشد، بهترین را انتخاب کن
             if attr.endswith("srcset"):
                 candidates = re.findall(r'(\S+)\s+(\d+)w', val)
                 if candidates:
                     best = max(candidates, key=lambda x: int(x[1]))
-                    return best[0]
-            return val
+                    print(f"   📸 انتخاب از data-srcset: {best[1]}w")
+                    return convert_to_original(best[0])
+            print(f"   📸 انتخاب از {attr}")
+            return convert_to_original(val)
+
     # ۳. src معمولی
-    return el.get_attribute("src")
+    src = el.get_attribute("src")
+    if src:
+        print(f"   📸 استفاده از src")
+        return convert_to_original(src)
+    return None
 
 def extract_images(page, url):
-    print("🖼️ استخراج عکس‌های باکیفیت...")
+    print("🖼️ استخراج عکس‌های باکیفیت (با پشتیبانی از Pinterest originals)...")
     # اسکرول و صبر برای بارگذاری کامل
     for _ in range(3):
         page.evaluate("window.scrollBy(0, 800)")
@@ -72,12 +117,11 @@ def extract_images(page, url):
 
     images = []
     img_elements = page.query_selector_all("img")
-    for img in img_elements:
+    for idx, img in enumerate(img_elements):
         src = extract_image_src(img)
         if not src:
             continue
         absolute_url = urljoin(url, src.strip())
-        # فیلتر بر اساس ابعاد (برای حذف آیکون‌ها)
         try:
             width = img.evaluate("el => el.naturalWidth")
             height = img.evaluate("el => el.naturalHeight")
@@ -86,12 +130,14 @@ def extract_images(page, url):
         if width > 100 and height > 100:
             if absolute_url not in images:
                 images.append(absolute_url)
-    print(f"{len(images)} عکس واجد شرایط پیدا شد.")
+                print(f"   ✅ عکس {idx+1}: {width}x{height} | {os.path.basename(absolute_url)[:60]}")
+        else:
+            print(f"   ⏭️ رد شد (ابعاد {width}x{height}): {os.path.basename(absolute_url)[:40]}")
+    print(f"🎯 {len(images)} عکس واجد شرایط پیدا شد.")
     return images
 
-# ---------- رهگیری شبکه برای ویدئوها ----------
+# ---------- رهگیری شبکه برای ویدئوها (بدون تغییر) ----------
 def click_possible_play_buttons(page):
-    # (مانند قبل) ...
     print("🔍 جستجوی دکمه‌های Play...")
     selectors = [
         "button[aria-label*='play']",
@@ -126,7 +172,6 @@ def click_possible_play_buttons(page):
     return clicked
 
 def capture_media_after_interaction(page, url, max_videos=5, wait_seconds=30):
-    # (مانند قبل) ...
     video_urls = []
     video_extensions = (".mp4", ".webm", ".m3u8", ".ts", ".mkv", ".mov", ".avi", ".flv")
 
@@ -157,7 +202,6 @@ def capture_media_after_interaction(page, url, max_videos=5, wait_seconds=30):
     return final
 
 def download_with_ytdlp(url, output_dir, max_videos, quality="bestvideo+bestaudio/best"):
-    # (مانند قبل، با اعتبارسنجی حجم) ...
     print(f"📥 yt-dlp روی: {url}")
     outtmpl = os.path.join(output_dir, "%(title)s.%(ext)s")
     cmd = [
@@ -180,7 +224,7 @@ def download_with_ytdlp(url, output_dir, max_videos, quality="bestvideo+bestaudi
         for f in os.listdir(output_dir):
             fp = os.path.join(output_dir, f)
             if os.path.isfile(fp) and f.lower().endswith(valid_exts):
-                if os.path.getsize(fp) > 100 * 1024:  # >100KB
+                if os.path.getsize(fp) > 100 * 1024:
                     valid_count += 1
                 else:
                     os.remove(fp)
@@ -230,7 +274,7 @@ def main():
         page2.close()
         browser.close()
 
-    # --- دانلود عکس‌ها (با کیفیت بالا) ---
+    # --- دانلود عکس‌ها (حالا با لینک originals) ---
     img_downloaded = 0
     for img_url in images:
         fname = sanitize_filename(img_url)
@@ -238,14 +282,28 @@ def main():
             fname += ".jpg"
         headers = {"Referer": url}
         save_path = os.path.join(img_dir, fname)
+        print(f"⬇️ دانلود عکس: {fname} ...")
         if download_file(img_url, save_path, headers=headers):
-            if os.path.getsize(save_path) > MIN_IMAGE_SIZE_KB * 1024:
+            size_kb = os.path.getsize(save_path) / 1024
+            if size_kb >= MIN_IMAGE_SIZE_KB:
+                print(f"   ✅ ذخیره شد ({size_kb:.1f} KB)")
                 img_downloaded += 1
             else:
-                print(f"🗑️ حذف عکس کم‌حجم: {fname} ({os.path.getsize(save_path)/1024:.1f} KB)")
+                print(f"   🗑️ حذف (حجم {size_kb:.1f} KB < {MIN_IMAGE_SIZE_KB} KB)")
                 os.remove(save_path)
+        else:
+            print(f"   ❌ دانلود ناموفق")
+            # شاید نسخه originals وجود نداشته باشد -> تلاش با 736x
+            if "/originals/" in img_url:
+                fallback_url = img_url.replace("/originals/", "/736x/")
+                print(f"   🔄 تلاش با 736x: {fallback_url[:100]}")
+                if download_file(fallback_url, save_path, headers=headers):
+                    size_kb = os.path.getsize(save_path) / 1024
+                    if size_kb >= MIN_IMAGE_SIZE_KB:
+                        print(f"   ✅ ذخیره شد (fallback, {size_kb:.1f} KB)")
+                        img_downloaded += 1
 
-    # --- دانلود ویدئوها (مانند قبل) ---
+    # --- دانلود ویدئوها (بدون تغییر) ---
     vid_downloaded = 0
     if video_urls:
         for vurl in video_urls:
