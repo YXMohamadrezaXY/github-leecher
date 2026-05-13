@@ -1,4 +1,4 @@
-name: Spotify Downloader (via YouTube)
+name: Spotify Downloader (via spotdl)
 
 on:
   workflow_dispatch:
@@ -13,7 +13,6 @@ on:
         options:
           - mp3
           - flac
-          - m4a
         default: 'mp3'
       quality:
         description: '📻 کیفیت (برای mp3)'
@@ -39,22 +38,20 @@ jobs:
         with:
           python-version: '3.11'
 
-      - name: Install system dependencies (ffmpeg, zip)
+      - name: نصب ffmpeg و spotdl
         run: |
           sudo apt-get update
-          sudo apt-get install -y ffmpeg zip
+          sudo apt-get install -y ffmpeg
+          pip install --upgrade spotdl
 
-      - name: Install yt-dlp
-        run: pip install --upgrade yt-dlp
-
-      - name: Download from Spotify
+      - name: دانلود از اسپاتیفای با spotdl
         env:
           SPOTIFY_URL: ${{ github.event.inputs.spotify_url }}
           FORMAT: ${{ github.event.inputs.format }}
           QUALITY: ${{ github.event.inputs.quality }}
-        run: python scripts/spotify_ytdlp.py
+        run: python scripts/spotify_spotdl.py
 
-      - name: Commit files
+      - name: ذخیره فایل‌ها در ریپازیتوری
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
