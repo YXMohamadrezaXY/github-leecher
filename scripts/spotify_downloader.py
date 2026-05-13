@@ -1,6 +1,9 @@
 import os
 import subprocess
 import shutil
+from pathlib import Path
+
+SPLIT_MB = 90  # هر قطعه حداکثر ۹۰ مگابایت
 
 def main():
     url = os.environ.get("SPOTIFY_URL", "").strip()
@@ -14,43 +17,58 @@ def main():
     output_dir = "output/spotify"
     os.makedirs(output_dir, exist_ok=True)
 
-    # ساخت دستور spotdl
+    # ۱. دانلود آهنگ‌ها با spotdl
     cmd = [
         "spotdl", "download", url,
         "--format", fmt,
         "--bitrate", quality,
-        "--output", output_dir + "/{artists} - {title}.{output-ext}"
+        "--output", f"{output_dir}/{{artists}} - {{title}}.{{output-ext}}"
     ]
-
-    # برای flac، bitrate مهم نیست -> حذفش کن
     if fmt == "flac":
         cmd = [c for c in cmd if c != "--bitrate" and c != quality]
 
-    print(f"▶️ اجرای دستور: {' '.join(cmd)}")
+    print(f"▶️ اجرا: {' '.join(cmd)}")
     try:
         result = subprocess.run(cmd, capture_output=True, text=True, timeout=3600)
         print(result.stdout)
         if result.returncode != 0:
-            print(f"خطای spotdl:\n{result.stderr}")
-        else:
-            print("✅ دانلود با موفقیت انجام شد.")
-            # فشرده‌سازی فایل‌های حجیم (اختیاری)
-            compress_large_files(output_dir)
+            print(f"❌ خطای spotdl:\n{result.stderr}")
+            return
     except subprocess.TimeoutExpired:
-        print("⏰ زمان دانلود به پایان رسید (۶۰ دقیقه).")
-    except Exception as e:
-        print(f"❌ خطا: {e}")
+        print("⏰ زمان دانلود تمام شد (۶۰ دقیقه).")
+        return
 
-def compress_large_files(folder):
-    """فشرده‌سازی فایل‌های بزرگتر از ۵۰ مگابایت"""
-    from pathlib import Path
-    for f in Path(folder).rglob("*"):
-        if f.is_file() and f.suffix in (".mp3", ".flac") and f.stat().st_size > 50 * 1024 * 1024:
-            print(f"🗜️ فشرده‌سازی {f.name}...")
-            new = str(f).replace(f.suffix, f"_compressed{f.suffix}")
-            subprocess.run(["ffmpeg", "-i", str(f), "-b:a", "128k", new, "-y"], capture_output=True)
-            os.replace(new, str(f))
+    # ۲. ساخت آرشیو zip چندبخشی و جایگزینی با فایل‌های اصلی
+    songs = list(Path(output_dir).glob(f"*.{fmt}"))
+    if not songs:
+        print("⚠️ هیچ فایلی دانلود نشد.")
+        return
+
+    print("🗜️ ساخت آرشیو zip چندبخشی...")
+    zip_name = "playlist.zip"
+    zip_path = os.path.join(output_dir, zip_name)
+
+    # ساخت zip اسپلیت‌شده با دستور zip -s
+    cmd_zip = [
+        "zip", "-s", f"{SPLIT_MB}m", "-r", zip_path, "."
+    ]
+    # اجرا در پوشه output/spotify
+    p = subprocess.run(cmd_zip, cwd=output_dir, capture_output=True, text=True)
+    if p.returncode != 0:
+        print(f"❌ خطا در ساخت zip: {p.stderr}")
+        return
+
+    # حذف فایل‌های اصلی (فقط فایل‌های صوتی) برای جلوگیری از افزایش حجم ریپو
+    for f in songs:
+        try:
+            os.remove(str(f))
+            print(f"🗑️ پاک شد: {f.name}")
+        except Exception as e:
+            print(f"⚠️ خطا در حذف {f.name}: {e}")
+
+    # قسمت‌های zip شامل playlist.zip، playlist.z01، ... خواهند بود.
+    # همه در output/spotify باقی می‌مانند.
+    print("✅ تمام فایل‌ها در پوشه output/spotify قرار دارند.")
 
 if __name__ == "__main__":
     main()
-  
