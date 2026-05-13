@@ -16,12 +16,12 @@ def main():
     output_dir = "output/spotify"
     os.makedirs(output_dir, exist_ok=True)
 
-    # دستور spotdl با Piped به جای YouTube Music
+    # استفاده از --audio piped (آرگومان صحیح در نسخه‌های جدیدتر)
     cmd = [
         "spotdl", "download", url,
         "--format", fmt,
         "--bitrate", quality,
-        "--audio-providers", "piped",   # کلید حل مشکل
+        "--audio", "piped",
         "--output", str(Path(output_dir) / "{artists} - {title}.{output-ext}")
     ]
     if fmt == "flac":
@@ -33,12 +33,19 @@ def main():
         print(result.stdout)
         if result.returncode != 0:
             print(f"❌ خطای spotdl:\n{result.stderr}")
-            return
+            # تلاش با youtube-music
+            print("🔄 تلاش با youtube-music...")
+            cmd2 = [c if c != "piped" else "youtube-music" for c in cmd]
+            result2 = subprocess.run(cmd2, capture_output=True, text=True, timeout=3600)
+            print(result2.stdout)
+            if result2.returncode != 0:
+                print(f"❌ باز هم شکست:\n{result2.stderr}")
+                return
     except subprocess.TimeoutExpired:
         print("⏰ زمان تمام شد.")
         return
 
-    # ساخت ZIP چندبخشی
+    # ساخت ZIP
     songs = list(Path(output_dir).glob(f"*.{fmt}"))
     if not songs:
         print("⚠️ هیچ فایلی دانلود نشد.")
@@ -55,11 +62,10 @@ def main():
     for f in songs:
         try:
             os.remove(str(f))
-            print(f"🗑️ پاک شد: {f.name}")
-        except Exception as e:
-            print(f"⚠️ خطا در حذف {f.name}: {e}")
+        except:
+            pass
 
-    print("✅ فایل‌های ZIP در output/spotify آماده هستند.")
+    print("✅ فایل‌های ZIP آماده هستند.")
 
 if __name__ == "__main__":
     main()
