@@ -1,22 +1,22 @@
-name: Spotify Music Downloader
+name: Spotify Downloader (via YouTube)
 
 on:
   workflow_dispatch:
     inputs:
       spotify_url:
-        description: 'لینک Spotify (آهنگ، آلبوم یا پلی‌لیست)'
+        description: '🎵 لینک Spotify (آهنگ، آلبوم، پلی‌لیست)'
         required: true
-        type: string
       format:
-        description: 'فرمت خروجی'
+        description: '🎧 فرمت خروجی'
         required: true
         type: choice
         options:
           - mp3
           - flac
+          - m4a
         default: 'mp3'
       quality:
-        description: 'کیفیت صدا (برای mp3)'
+        description: '📻 کیفیت (برای mp3)'
         required: false
         type: choice
         options:
@@ -27,43 +27,39 @@ on:
         default: '320k'
 
 jobs:
-  spotify-download:
+  download:
     runs-on: ubuntu-latest
-    timeout-minutes: 120
+    timeout-minutes: 360
     permissions:
       contents: write
-    
     steps:
       - uses: actions/checkout@v4
 
-      - name: Setup Python
-        uses: actions/setup-python@v5
+      - uses: actions/setup-python@v5
         with:
           python-version: '3.11'
 
-      - name: Install system dependencies (ffmpeg)
+      - name: Install system dependencies (ffmpeg, zip)
         run: |
           sudo apt-get update
-          sudo apt-get install -y ffmpeg
+          sudo apt-get install -y ffmpeg zip
 
-      - name: Install Python packages
-        run: |
-          pip install --upgrade yt-dlp
-          pip install spotdl
+      - name: Install yt-dlp
+        run: pip install --upgrade yt-dlp
 
       - name: Download from Spotify
         env:
           SPOTIFY_URL: ${{ github.event.inputs.spotify_url }}
           FORMAT: ${{ github.event.inputs.format }}
           QUALITY: ${{ github.event.inputs.quality }}
-        run: python scripts/spotify_downloader.py
+        run: python scripts/spotify_ytdlp.py
 
-      - name: Commit downloaded music
+      - name: Commit files
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git add output/spotify/
-          git commit -m "🎵 Add Spotify downloads" || echo "No changes to commit"
+          git commit -m "🎵 Spotify downloads" || echo "No changes to commit"
           git push
